@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Build output
+server/public/
+client/dist/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Temp / uploads
+*.zip
+*.tmp
+tmp/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# yt-dlp / ffmpeg temp files
+*.mp4.part
+*.webm.part
