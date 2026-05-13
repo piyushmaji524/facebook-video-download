@@ -12,12 +12,13 @@ This guide covers everything from a **fresh Ubuntu VPS** to a **live website wit
 4. [Install Dependencies & Build](#4-install-dependencies--build)
 5. [Start App with PM2](#5-start-app-with-pm2)
 6. [Configure Nginx](#6-configure-nginx)
-7. [Point Domain to VPS](#7-point-domain-to-vps)
-8. [Install SSL Certificate](#8-install-ssl-certificate)
-9. [Firewall Setup](#9-firewall-setup)
-10. [Verify Everything Works](#10-verify-everything-works)
-11. [Change Domain Later](#11-change-domain-later)
-12. [Maintenance Commands](#12-maintenance-commands)
+7. [Install FileBrowser (File Manager)](#7-install-filebrowser-file-manager)
+8. [Point Domain to VPS](#8-point-domain-to-vps)
+9. [Install SSL Certificate](#9-install-ssl-certificate)
+10. [Firewall Setup](#10-firewall-setup)
+11. [Verify Everything Works](#11-verify-everything-works)
+12. [Change Domain Later](#12-change-domain-later)
+13. [Maintenance Commands](#13-maintenance-commands)
 
 ---
 
@@ -193,7 +194,67 @@ systemctl start nginx
 
 ---
 
-## 7. Point Domain to VPS
+## 7. Install FileBrowser (File Manager)
+
+FileBrowser lets you manage files on your VPS through a web interface at `files.yourdomain.com`.
+
+```bash
+# Download and install FileBrowser
+curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+
+# Create config directory
+mkdir -p /etc/filebrowser
+
+# Initialize database
+filebrowser -d /etc/filebrowser/filebrowser.db config init
+
+# Set address and port
+filebrowser -d /etc/filebrowser/filebrowser.db config set --address 0.0.0.0 --port 8080
+
+# Set root directory (VPS files you want to manage)
+filebrowser -d /etc/filebrowser/filebrowser.db config set --root /var/www
+
+# Create admin user (change password!)
+filebrowser -d /etc/filebrowser/filebrowser.db users add admin YOUR_PASSWORD --perm.admin
+
+# Start FileBrowser with PM2
+pm2 start $(which filebrowser) --name "filebrowser" -- \
+  -d /etc/filebrowser/filebrowser.db
+pm2 save
+```
+
+### Create FileBrowser Nginx Config
+
+```bash
+cat > /etc/nginx/sites-available/filebrowser << 'EOF'
+server {
+    listen 80;
+    server_name files.yourdomain.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF
+
+# Replace yourdomain.com with your actual domain
+sed -i 's/yourdomain.com/YOURACTUALDOMAIN.COM/g' /etc/nginx/sites-available/filebrowser
+
+# Enable it
+ln -sf /etc/nginx/sites-available/filebrowser /etc/nginx/sites-enabled/filebrowser
+nginx -t && systemctl reload nginx
+```
+
+> After SSL is set up (Step 9), FileBrowser will be accessible at `https://files.yourdomain.com`
+
+---
+
+## 8. Point Domain to VPS
 
 Go to your domain registrar (Hostinger, Namecheap, etc.) and add these **DNS A records**:
 
@@ -201,6 +262,9 @@ Go to your domain registrar (Hostinger, Namecheap, etc.) and add these **DNS A r
 |------|------|-------|-----|
 | A | `@` (or blank) | `YOUR_VPS_IP` | 300 |
 | A | `www` | `YOUR_VPS_IP` | 300 |
+| A | `files` | `YOUR_VPS_IP` | 300 |
+
+> `files.yourdomain.com` is the File Manager (FileBrowser) subdomain.
 
 Wait for DNS to propagate (usually 5–30 minutes).
 
@@ -213,15 +277,18 @@ nslookup yourdomain.com
 
 ---
 
-## 8. Install SSL Certificate
+## 9. Install SSL Certificate
 
 Once DNS is pointing to your VPS:
 
 ```bash
-# Get free SSL from Let's Encrypt
+# SSL for main site
 certbot --nginx -d yourdomain.com -d www.yourdomain.com
 
-# Follow the prompts:
+# SSL for file manager subdomain
+certbot --nginx -d files.yourdomain.com
+
+# Follow the prompts for each:
 # - Enter your email
 # - Agree to terms (A)
 # - Choose redirect option (2) — recommended
@@ -234,7 +301,7 @@ SSL renews automatically every 90 days. Nothing extra needed.
 
 ---
 
-## 9. Firewall Setup
+## 10. Firewall Setup
 
 ```bash
 ufw allow OpenSSH
@@ -245,14 +312,14 @@ ufw status
 
 ---
 
-## 10. Verify Everything Works
+## 11. Verify Everything Works
 
 ```bash
 # 1. App health check
 curl https://yourdomain.com/health
 # Expected: {"status":"ok"}
 
-# 2. Check PM2 status
+# 2. Check PM2 status (should show fb-downloader + filebrowser both online)
 pm2 status
 
 # 3. Check Nginx status
@@ -262,20 +329,31 @@ systemctl status nginx
 pm2 logs fb-downloader --lines 20
 ```
 
-Open `https://yourdomain.com` in your browser — the site should load!
+| URL | Expected |
+|-----|----------|
+| `https://yourdomain.com` | VidDown site loads |
+| `https://yourdomain.com/health` | `{"status":"ok"}` |
+| `https://files.yourdomain.com` | FileBrowser login page |
 
 ---
 
-## 11. Change Domain Later
+## 12. Change Domain Later
 
-A script is included to automate domain switching.
+A script is included to automate domain switching — it handles **everything** automatically.
 
-### Step A — Update DNS at your registrar
+### Step A — Add DNS records for new domain
 
-Add A records for the **new domain** pointing to the same VPS IP.
+At your domain registrar, add these 3 A records for the new domain:
+
+| Type | Name | Value |
+|------|------|-------|
+| A | `@` | `YOUR_VPS_IP` |
+| A | `www` | `YOUR_VPS_IP` |
+| A | `files` | `YOUR_VPS_IP` |
+
 Wait 5–30 minutes for DNS propagation.
 
-### Step B — Run the change-domain script
+### Step B — Run the script
 
 SSH into your VPS and run:
 
@@ -284,22 +362,30 @@ bash /var/www/fbdown/change-domain.sh newdomain.com your@email.com
 ```
 
 **What the script does automatically:**
-1. Detects the current domain from Nginx config
-2. Updates `server_name` in Nginx config
-3. Issues a new SSL certificate via Certbot
-4. Reloads Nginx
-5. Restarts the app via PM2
+1. Detects current domain from Nginx
+2. Updates `server_name` in main site Nginx config
+3. Updates `server_name` in FileBrowser Nginx config (`files.` subdomain)
+4. Issues SSL cert for `newdomain.com` + `www.newdomain.com`
+5. Issues SSL cert for `files.newdomain.com`
+6. Reloads Nginx
+7. Restarts the app via PM2
+8. Shows final URLs
 
 **Example:**
 ```bash
 bash /var/www/fbdown/change-domain.sh mysite.com admin@mysite.com
 ```
 
-> Note: The old domain's SSL cert is kept by Let's Encrypt but the Nginx config will point to the new one.
+| After script | URL |
+|-------------|-----|
+| Main site | `https://mysite.com` |
+| File manager | `https://files.mysite.com` |
+
+> The old domain's SSL cert stays in Let's Encrypt but Nginx will use the new one.
 
 ---
 
-## 12. Maintenance Commands
+## 13. Maintenance Commands
 
 ### App Management
 
@@ -382,8 +468,9 @@ certbot certificates          # List all certificates
 | Service | Port | Notes |
 |---------|------|-------|
 | Node.js app | 5000 | Internal only, proxied by Nginx |
+| FileBrowser | 8080 | Internal only, proxied by Nginx |
 | Nginx HTTP | 80 | Redirects to HTTPS |
-| Nginx HTTPS | 443 | Main site |
+| Nginx HTTPS | 443 | Main site + FileBrowser subdomain |
 | SSH | 22 | Server access |
 
 ---
